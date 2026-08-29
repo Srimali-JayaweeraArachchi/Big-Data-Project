@@ -93,6 +93,36 @@ The first Spark build/start takes longer because PySpark and the Kafka connector
 - Prometheus-format metrics: <http://localhost:8000/metrics>
 - Airflow: <http://localhost:8081>
 
+## Dashboard
+
+![Smart Grid Dashboard](docs/screenshots/02-dashboard-overview.png)
+
+The dashboard combines live grid KPIs with zone-level comparisons and refreshes automatically as new meter events are processed.
+
+### Energy trends and alerts
+
+![Energy Trends and Alerts](docs/screenshots/03-energy-charts.png)
+
+Spark Structured Streaming produces the recent consumption-versus-solar time series, while threshold breaches are stored and displayed as operational alerts.
+
+### Daily household billing
+
+![Daily Household Billing Report](docs/screenshots/05-household-billing.png)
+
+The billing view reconciles daily household usage with the latest applicable tariff and subsidy flag loaded by Airflow.
+
+### Airflow batch orchestration
+
+![Successful Airflow DAG Run](docs/screenshots/07-airflow-successful-run.png)
+
+The scheduled DAG discovers tariff files, validates and loads tariff records, and then materializes the consolidated billing report.
+
+### Serving API
+
+![FastAPI Overview Response](docs/screenshots/09-api-overview-response.png)
+
+FastAPI exposes queryable operational and billing results together with health and metrics endpoints.
+
 Airflow standalone prints its generated admin credentials in its logs:
 
 ```powershell
