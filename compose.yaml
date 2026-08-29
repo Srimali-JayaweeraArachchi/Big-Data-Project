@@ -1,0 +1,146 @@
+name: smart-grid-mini-project
+
+x-common-env: &common-env
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: 5432
+  POSTGRES_DB: ${POSTGRES_DB:-smartgrid}
+  POSTGRES_USER: ${POSTGRES_USER:-smartgrid}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-smartgrid_dev_password}
+  KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS:-kafka:9092}
+  KAFKA_TOPIC: ${KAFKA_TOPIC:-smart-meter-readings}
+  SIMULATED_DAY_SECONDS: ${SIMULATED_DAY_SECONDS:-300}
+  LOW_RENEWABLE_THRESHOLD: ${LOW_RENEWABLE_THRESHOLD:-0.10}
+  HIGH_LOAD_THRESHOLD_KWH: ${HIGH_LOAD_THRESHOLD_KWH:-8.0}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-smartgrid}
+      POSTGRES_USER: ${POSTGRES_USER:-smartgrid}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-smartgrid_dev_password}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/init.sql:/docker-entrypoint-initdb.d/001-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-smartgrid} -d ${POSTGRES_DB:-smartgrid}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  kafka:
+    image: apache/kafka:4.1.1
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_NUM_PARTITIONS: 3
+      KAFKA_HEAP_OPTS: -Xms384m -Xmx384m
+    ports:
+      - "9092:9092"
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+    restart: unless-stopped
+
+  meter-producer:
+    build: ./producers
+    command: ["python", "meter_producer.py"]
+    environment:
+      <<: *common-env
+      METER_INTERVAL_SECONDS: ${METER_INTERVAL_SECONDS:-2}
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: unless-stopped
+
+  tariff-generator:
+    build: ./producers
+    command: ["python", "tariff_generator.py"]
+    environment:
+      <<: *common-env
+      OUTPUT_DIR: /data/incoming
+    volumes:
+      - daily_data:/data
+    restart: unless-stopped
+
+  spark-processor:
+    build: ./spark
+    environment:
+      <<: *common-env
+      SPARK_LOCAL_IP: 0.0.0.0
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    volumes:
+      - spark_checkpoints:/checkpoints
+    mem_limit: 3g
+    restart: unless-stopped
+
+  airflow:
+    image: apache/airflow:3.1.0-python3.12
+    command: standalone
+    environment:
+      <<: *common-env
+      AIRFLOW_HOME: /opt/airflow
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+      AIRFLOW__SCHEDULER__MIN_FILE_PROCESS_INTERVAL: 10
+      _PIP_ADDITIONAL_REQUIREMENTS: "psycopg2-binary==2.9.10"
+    ports:
+      - "8081:8080"
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags:ro
+      - airflow_data:/opt/airflow
+      - daily_data:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    mem_limit: 2g
+    restart: unless-stopped
+
+  api:
+    build: ./api
+    environment:
+      <<: *common-env
+      NO_DATA_ALERT_SECONDS: 120
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  dashboard:
+    build: ./dashboard
+    environment:
+      API_BASE_URL: http://api:8000
+    ports:
+      - "8501:8501"
+    depends_on:
+      - api
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  kafka_data:
+  spark_checkpoints:
+  airflow_data:
+  daily_data:
